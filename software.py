@@ -269,67 +269,79 @@ elif selected_menu == "알림" and is_admin:
         else:
             st.error(f"재고 체크 불가: 컬럼 오류")
 
-# === [6] 수익 분석 (새로 추가됨) ===
+# === [6] 수익 분석 (날짜 에러 수정됨) ===
 elif selected_menu == "수익 분석" and is_admin:
     st.header("💰 월간 수익 및 비용 분석")
 
     if df_transactions.empty:
         st.info("거래 기록이 없어 분석할 수 없습니다.")
     else:
-        # 1. 날짜 처리
+        # [수정됨] 1. 날짜 처리 (에러 방지 로직 추가)
         df_analysis = df_transactions.copy()
-        df_analysis['일시'] = pd.to_datetime(df_analysis['일시'])
-        df_analysis['월'] = df_analysis['일시'].dt.strftime('%Y-%m')
 
-        # 2. 월 선택 박스
-        all_months = sorted(df_analysis['월'].unique().tolist(), reverse=True)
-        selected_month = st.selectbox("분석할 월을 선택하세요", all_months)
+        # errors='coerce'를 사용하여 형식이 맞지 않는 데이터는 NaT로 변환
+        df_analysis['일시'] = pd.to_datetime(df_analysis['일시'], errors='coerce')
 
-        # 3. 해당 월 데이터 필터링
-        monthly_data = df_analysis[df_analysis['월'] == selected_month]
+        # 날짜 변환에 실패한 행(NaT)이 있다면 경고 후 제거
+        if df_analysis['일시'].isnull().any():
+            invalid_count = df_analysis['일시'].isnull().sum()
+            st.warning(f"⚠️ 날짜 형식이 올바르지 않은 데이터 {invalid_count}건을 제외하고 분석합니다.")
+            df_analysis = df_analysis.dropna(subset=['일시'])
 
-        if monthly_data.empty:
-            st.warning("선택한 달에 데이터가 없습니다.")
+        if df_analysis.empty:
+            st.error("유효한 날짜를 가진 거래 기록이 없습니다.")
         else:
-            # 4. 유형별 금액 계산 (수량 * 가격)
-            monthly_data['총액'] = monthly_data['수량'] * monthly_data['가격']
+            df_analysis['월'] = df_analysis['일시'].dt.strftime('%Y-%m')
 
-            # 그룹화하여 유형별 합계 구하기
-            summary = monthly_data.groupby('유형')['총액'].sum()
+            # 2. 월 선택 박스
+            all_months = sorted(df_analysis['월'].unique().tolist(), reverse=True)
+            selected_month = st.selectbox("분석할 월을 선택하세요", all_months)
 
-            # 각 항목별 합계 가져오기 (없으면 0원)
-            total_out = summary.get('출고', 0)  # 출고 금액
-            total_in = summary.get('입고', 0)  # 입고 금액
-            total_return = summary.get('반품', 0)  # 반품 금액
-            total_damage = summary.get('파손', 0)  # 파손 금액
+            # 3. 해당 월 데이터 필터링
+            monthly_data = df_analysis[df_analysis['월'] == selected_month]
 
-            # 5. 공식 적용
-            # 수익 = (출고 - 반품)
-            revenue = total_out - total_return
+            if monthly_data.empty:
+                st.warning("선택한 달에 데이터가 없습니다.")
+            else:
+                # 4. 유형별 금액 계산 (수량 * 가격)
+                monthly_data['총액'] = monthly_data['수량'] * monthly_data['가격']
 
-            # 비용 = (입고 + 파손)
-            cost = total_in + total_damage
+                # 그룹화하여 유형별 합계 구하기
+                summary = monthly_data.groupby('유형')['총액'].sum()
 
-            # 순이익 = 수익 - 비용
-            net_profit = revenue - cost
+                # 각 항목별 합계 가져오기 (없으면 0원)
+                total_out = summary.get('출고', 0)  # 출고 금액
+                total_in = summary.get('입고', 0)  # 입고 금액
+                total_return = summary.get('반품', 0)  # 반품 금액
+                total_damage = summary.get('파손', 0)  # 파손 금액
 
-            # 6. 결과 시각화 (Metric)
-            st.markdown("---")
-            c1, c2, c3 = st.columns(3)
+                # 5. 공식 적용
+                # 수익 = (출고 - 반품)
+                revenue = total_out - total_return
 
-            with c1:
-                st.metric(label="총 수익 (Revenue)", value=f"{revenue:,.0f} 원",
-                          help="(출고 금액 - 반품 금액)")
-            with c2:
-                st.metric(label="총 비용 (Cost)", value=f"{cost:,.0f} 원",
-                          help="(입고 금액 + 파손 금액)")
-            with c3:
-                st.metric(label="순이익 (Net Profit)", value=f"{net_profit:,.0f} 원",
-                          delta=f"{net_profit:,.0f} 원",
-                          help="수익 - 비용")
-            st.markdown("---")
+                # 비용 = (입고 + 파손)
+                cost = total_in + total_damage
 
-            # 7. 상세 데이터 보여주기
-            with st.expander("📊 상세 거래 내역 보기"):
-                st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']],
-                             use_container_width=True)
+                # 순이익 = 수익 - 비용
+                net_profit = revenue - cost
+
+                # 6. 결과 시각화 (Metric)
+                st.markdown("---")
+                c1, c2, c3 = st.columns(3)
+
+                with c1:
+                    st.metric(label="총 수익 (Revenue)", value=f"{revenue:,.0f} 원",
+                              help="(출고 금액 - 반품 금액)")
+                with c2:
+                    st.metric(label="총 비용 (Cost)", value=f"{cost:,.0f} 원",
+                              help="(입고 금액 + 파손 금액)")
+                with c3:
+                    st.metric(label="순이익 (Net Profit)", value=f"{net_profit:,.0f} 원",
+                              delta=f"{net_profit:,.0f} 원",
+                              help="수익 - 비용")
+                st.markdown("---")
+
+                # 7. 상세 데이터 보여주기
+                with st.expander("📊 상세 거래 내역 보기"):
+                    st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']],
+                                 use_container_width=True)
