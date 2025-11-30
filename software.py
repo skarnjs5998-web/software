@@ -98,7 +98,6 @@ else:
 # ---------------------------------------------------------
 menu_options = ["주문 청구", "현재 재고"]
 if is_admin:
-    # '리포트 및 분석' 대신 '수익 분석' 추가
     menu_options += ["입출고 입력", "거래 기록", "알림", "수익 분석"]
 
 choice = st.title("📚 인하대 출판부 재고 관리 시스템")
@@ -228,9 +227,87 @@ elif selected_menu == "입출고 입력" and is_admin:
                     except Exception as e:
                         st.error(f"처리 중 오류 발생: {e}")
 
-# === [4] 거래 기록 (관리자) ===
+# === [4] 거래 기록 (관리자 - 취소 기능 추가) ===
 elif selected_menu == "거래 기록" and is_admin:
     st.header("📋 전체 거래 내역")
+
+    # [기능 추가] 실수로 입력한 거래 취소하기
+    with st.expander("🚨 잘못 입력한 거래 취소 및 되돌리기 (클릭하여 열기)"):
+        st.caption("주의: 이 기능은 선택한 거래 기록을 삭제하고, 재고 수량을 해당 거래 이전으로 되돌립니다.")
+
+        if not df_transactions.empty:
+            # 최근 20건만 표시 (너무 많으면 선택하기 힘드므로)
+            recent_tx = df_transactions.sort_values(by="일시", ascending=False).head(20).copy()
+
+            # 선택 박스에 보여줄 문자열 생성
+            recent_tx['display_text'] = (
+                    recent_tx['일시'].astype(str) + " | " +
+                    recent_tx['유형'] + " | " +
+                    recent_tx['책 이름'] + " (" +
+                    recent_tx['수량'].astype(str) + "권)"
+            )
+
+            selected_cancel_tx = st.selectbox(
+                "취소할 거래를 선택하세요 (최근 20건)",
+                recent_tx['display_text'].tolist()
+            )
+
+            if st.button("선택한 거래 취소 및 원상복구"):
+                # 1. 선택한 거래의 원본 데이터 찾기
+                target_tx = recent_tx[recent_tx['display_text'] == selected_cancel_tx].iloc[0]
+
+                target_book = target_tx['책 이름']
+                target_qty = int(target_tx['수량'])
+                target_type = target_tx['유형']
+
+                # 2. 재고 되돌리기 계산
+                # 입고/반품 취소 -> 재고 감소
+                # 출고/파손 취소 -> 재고 증가
+                revert_qty = 0
+                if target_type in ["입고", "반품"]:
+                    revert_qty = -target_qty
+                elif target_type in ["출고", "파손"]:
+                    revert_qty = target_qty
+
+                # 3. 현재 재고 확인 및 업데이트
+                if target_book in df_inventory['책 이름'].values:
+                    current_stock = int(df_inventory.loc[df_inventory['책 이름'] == target_book, '현재 수량'].values[0])
+                    new_stock_after_cancel = current_stock + revert_qty
+
+                    if new_stock_after_cancel < 0:
+                        st.error(f"취소 불가능: 이 거래를 취소하면 재고가 음수({new_stock_after_cancel})가 됩니다.")
+                    else:
+                        # (1) 재고 업데이트
+                        df_inventory.loc[df_inventory['책 이름'] == target_book, '현재 수량'] = new_stock_after_cancel
+
+                        # (2) 거래 기록 삭제 (원본 df_transactions에서 인덱스로 삭제)
+                        # 일시와 책 이름, 유형이 모두 일치하는 행을 찾아서 삭제 (중복 방지를 위해 인덱스 활용)
+                        original_index = df_transactions[
+                            (df_transactions['일시'] == target_tx['일시']) &
+                            (df_transactions['책 이름'] == target_book) &
+                            (df_transactions['유형'] == target_type) &
+                            (df_transactions['수량'] == target_qty)
+                            ].index
+
+                        if not original_index.empty:
+                            df_transactions = df_transactions.drop(original_index[0])
+
+                            # (3) 저장
+                            save_inv = save_data_to_github(df_inventory, "inventory.csv", f"Revert Tx: {target_book}")
+                            save_tx = save_data_to_github(df_transactions, "transactions.csv",
+                                                          f"Cancel Tx: {selected_cancel_tx}")
+
+                            if save_inv and save_tx:
+                                st.success(f"거래가 취소되었습니다. 재고가 {current_stock} -> {new_stock_after_cancel} 권으로 복구되었습니다.")
+                                st.rerun()  # 새로고침하여 반영
+                        else:
+                            st.error("원본 데이터를 찾을 수 없어 삭제하지 못했습니다.")
+                else:
+                    st.error(f"'{target_book}' 책을 재고 목록에서 찾을 수 없습니다.")
+        else:
+            st.info("취소할 거래 기록이 없습니다.")
+
+    # 거래 기록 테이블 표시
     if not df_transactions.empty:
         df_sorted = df_transactions.sort_values(by="일시", ascending=False)
         st.dataframe(df_sorted, use_container_width=True)
@@ -269,23 +346,30 @@ elif selected_menu == "알림" and is_admin:
         else:
             st.error(f"재고 체크 불가: 컬럼 오류")
 
-# === [6] 수익 분석 (날짜 에러 수정됨) ===
+# === [6] 수익 분석 (날짜 파싱 강화) ===
 elif selected_menu == "수익 분석" and is_admin:
     st.header("💰 월간 수익 및 비용 분석")
 
     if df_transactions.empty:
         st.info("거래 기록이 없어 분석할 수 없습니다.")
     else:
-        # [수정됨] 1. 날짜 처리 (에러 방지 로직 추가)
         df_analysis = df_transactions.copy()
 
-        # errors='coerce'를 사용하여 형식이 맞지 않는 데이터는 NaT로 변환
-        df_analysis['일시'] = pd.to_datetime(df_analysis['일시'], errors='coerce')
+        # [핵심 수정] 날짜 데이터 정제 및 스마트 파싱
+        # 1. 문자열로 확실히 변환하고, 엑셀에서 자주 보이는 '.'을 '-'로 교체, 공백 제거
+        df_analysis['일시'] = df_analysis['일시'].astype(str).str.replace('.', '-', regex=False).str.strip()
 
-        # 날짜 변환에 실패한 행(NaT)이 있다면 경고 후 제거
+        # 2. mixed 포맷을 사용하여 다양한 형식(YYYY-MM-DD, YYYY/MM/DD, 등)을 모두 허용
+        try:
+            df_analysis['일시'] = pd.to_datetime(df_analysis['일시'], format='mixed', errors='coerce')
+        except:
+            # 구버전 pandas를 위한 예비책
+            df_analysis['일시'] = pd.to_datetime(df_analysis['일시'], errors='coerce')
+
+        # 날짜 변환 실패한 데이터 확인
         if df_analysis['일시'].isnull().any():
             invalid_count = df_analysis['일시'].isnull().sum()
-            st.warning(f"⚠️ 날짜 형식이 올바르지 않은 데이터 {invalid_count}건을 제외하고 분석합니다.")
+            st.warning(f"⚠️ 여전히 형식을 알 수 없는 날짜 데이터 {invalid_count}건이 있습니다. (원본 데이터 형식을 확인해주세요)")
             df_analysis = df_analysis.dropna(subset=['일시'])
 
         if df_analysis.empty:
@@ -293,39 +377,26 @@ elif selected_menu == "수익 분석" and is_admin:
         else:
             df_analysis['월'] = df_analysis['일시'].dt.strftime('%Y-%m')
 
-            # 2. 월 선택 박스
             all_months = sorted(df_analysis['월'].unique().tolist(), reverse=True)
             selected_month = st.selectbox("분석할 월을 선택하세요", all_months)
 
-            # 3. 해당 월 데이터 필터링
             monthly_data = df_analysis[df_analysis['월'] == selected_month]
 
             if monthly_data.empty:
                 st.warning("선택한 달에 데이터가 없습니다.")
             else:
-                # 4. 유형별 금액 계산 (수량 * 가격)
                 monthly_data['총액'] = monthly_data['수량'] * monthly_data['가격']
-
-                # 그룹화하여 유형별 합계 구하기
                 summary = monthly_data.groupby('유형')['총액'].sum()
 
-                # 각 항목별 합계 가져오기 (없으면 0원)
-                total_out = summary.get('출고', 0)  # 출고 금액
-                total_in = summary.get('입고', 0)  # 입고 금액
-                total_return = summary.get('반품', 0)  # 반품 금액
-                total_damage = summary.get('파손', 0)  # 파손 금액
+                total_out = summary.get('출고', 0)
+                total_in = summary.get('입고', 0)
+                total_return = summary.get('반품', 0)
+                total_damage = summary.get('파손', 0)
 
-                # 5. 공식 적용
-                # 수익 = (출고 - 반품)
                 revenue = total_out - total_return
-
-                # 비용 = (입고 + 파손)
                 cost = total_in + total_damage
-
-                # 순이익 = 수익 - 비용
                 net_profit = revenue - cost
 
-                # 6. 결과 시각화 (Metric)
                 st.markdown("---")
                 c1, c2, c3 = st.columns(3)
 
@@ -341,7 +412,6 @@ elif selected_menu == "수익 분석" and is_admin:
                               help="수익 - 비용")
                 st.markdown("---")
 
-                # 7. 상세 데이터 보여주기
                 with st.expander("📊 상세 거래 내역 보기"):
                     st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']],
                                  use_container_width=True)
