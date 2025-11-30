@@ -3,7 +3,6 @@ import pandas as pd
 from github import Github
 from io import StringIO
 from datetime import datetime
-import plotly.express as px
 
 # ---------------------------------------------------------
 # 1. 설정 및 Github 연결 함수
@@ -25,18 +24,17 @@ def load_data_from_github(file_name):
         # 2. 기본 공백 제거
         df.columns = df.columns.str.strip().str.replace("\xa0", " ")
 
-        # 3. [강력한 해결책] 컬럼 이름 정규화 (Standardization)
-        # CSV 파일의 헤더가 조금 달라도('현재수량', '책이름') 코드가 작동하도록 강제 변경
+        # 3. 컬럼 이름 정규화
         rename_map = {}
         for col in df.columns:
-            clean_col = col.replace(" ", "")  # 모든 공백 제거 후 비교
+            clean_col = col.replace(" ", "")
             if "책이름" in clean_col:
                 rename_map[col] = "책 이름"
             elif "현재수량" in clean_col:
                 rename_map[col] = "현재 수량"
             elif "안전재고" in clean_col:
                 rename_map[col] = "안전 재고"
-            elif "ISBN" in clean_col:  # 대소문자 이슈 방지
+            elif "ISBN" in clean_col:
                 rename_map[col] = "ISBN"
 
         if rename_map:
@@ -100,7 +98,8 @@ else:
 # ---------------------------------------------------------
 menu_options = ["주문 청구", "현재 재고"]
 if is_admin:
-    menu_options += ["입출고 입력", "거래 기록", "알림", "리포트 및 분석"]
+    # '리포트 및 분석' 대신 '수익 분석' 추가
+    menu_options += ["입출고 입력", "거래 기록", "알림", "수익 분석"]
 
 choice = st.title("📚 인하대 출판부 재고 관리 시스템")
 selected_menu = st.sidebar.selectbox("메뉴 선택", menu_options)
@@ -109,7 +108,7 @@ selected_menu = st.sidebar.selectbox("메뉴 선택", menu_options)
 # 5. 기능 구현
 # ---------------------------------------------------------
 
-# === [1] 현재 재고 (UI 개선 적용) ===
+# === [1] 현재 재고 ===
 if selected_menu == "현재 재고":
     st.subheader("🔍 현재 재고 현황")
 
@@ -124,7 +123,6 @@ if selected_menu == "현재 재고":
     else:
         result = df_inventory
 
-    # 안전하게 컬럼 설정 (없는 컬럼은 무시)
     config = {}
     if "가격" in result.columns:
         config["가격"] = st.column_config.NumberColumn(format="%d원")
@@ -166,19 +164,17 @@ elif selected_menu == "주문 청구":
                     if save_data_to_github(updated_orders, "orders.csv", f"Order request: {client_name}"):
                         st.success(f"주문이 접수되었습니다.\n\n거래처: {client_name}, 책: {selected_book}, 수량: {order_qty}")
         else:
-            st.error(f"'책 이름' 컬럼을 찾을 수 없습니다. 현재 인식된 컬럼: {df_inventory.columns.tolist()}")
+            st.error(f"'책 이름' 컬럼을 찾을 수 없습니다.")
 
 # === [3] 입출고 입력 (관리자) ===
 elif selected_menu == "입출고 입력" and is_admin:
     st.header("🚚 입출고 관리")
 
-    # 필수 컬럼 체크
     required_cols = ['책 이름', '현재 수량', '가격']
     missing_cols = [col for col in required_cols if col not in df_inventory.columns]
 
     if missing_cols:
         st.error(f"데이터 오류: 다음 컬럼을 찾을 수 없습니다 -> {missing_cols}")
-        st.write("현재 인식된 컬럼:", df_inventory.columns.tolist())
     else:
         with st.form("transaction_form"):
             tx_type = st.radio("거래 유형", ["입고", "출고", "파손", "반품"])
@@ -195,7 +191,6 @@ elif selected_menu == "입출고 입력" and is_admin:
                     st.error("거래처를 입력해주세요.")
                 else:
                     try:
-                        # 데이터 처리 로직
                         current_book_info = df_inventory[df_inventory['책 이름'] == selected_book].iloc[0]
                         current_qty = int(current_book_info['현재 수량'])
                         price = int(current_book_info['가격'])
@@ -272,46 +267,69 @@ elif selected_menu == "알림" and is_admin:
             else:
                 st.success("모든 재고가 안전합니다.")
         else:
-            st.error(f"재고 체크 불가: 컬럼 오류 (현재 컬럼: {df_inventory.columns.tolist()})")
+            st.error(f"재고 체크 불가: 컬럼 오류")
 
-# === [6] 리포트 및 분석 (관리자) ===
-elif selected_menu == "리포트 및 분석" and is_admin:
-    st.header("📈 데이터 분석 리포트")
+# === [6] 수익 분석 (새로 추가됨) ===
+elif selected_menu == "수익 분석" and is_admin:
+    st.header("💰 월간 수익 및 비용 분석")
 
-    if not df_transactions.empty:
-        df_transactions['일시'] = pd.to_datetime(df_transactions['일시'])
-        df_inventory['현재 수량'] = pd.to_numeric(df_inventory['현재 수량'])
-        df_inventory['가격'] = pd.to_numeric(df_inventory['가격'])
+    if df_transactions.empty:
+        st.info("거래 기록이 없어 분석할 수 없습니다.")
+    else:
+        # 1. 날짜 처리
+        df_analysis = df_transactions.copy()
+        df_analysis['일시'] = pd.to_datetime(df_analysis['일시'])
+        df_analysis['월'] = df_analysis['일시'].dt.strftime('%Y-%m')
 
-        tab1, tab2, tab3 = st.tabs(["월간 판매량", "재고 자산 평가", "거래처별 반품률"])
+        # 2. 월 선택 박스
+        all_months = sorted(df_analysis['월'].unique().tolist(), reverse=True)
+        selected_month = st.selectbox("분석할 월을 선택하세요", all_months)
 
-        with tab1:
-            st.subheader("월별 도서 판매 추이")
-            sales_df = df_transactions[df_transactions['유형'] == '출고'].copy()
-            if not sales_df.empty:
-                sales_df['월'] = sales_df['일시'].dt.strftime('%Y-%m')
-                monthly_sales = sales_df.groupby(['월', '책 이름'])['수량'].sum().reset_index()
-                fig = px.bar(monthly_sales, x='월', y='수량', color='책 이름', barmode='group')
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("출고 기록이 없습니다.")
+        # 3. 해당 월 데이터 필터링
+        monthly_data = df_analysis[df_analysis['월'] == selected_month]
 
-        with tab2:
-            st.subheader("현재 재고 총 가치")
-            total_value = (df_inventory['현재 수량'] * df_inventory['가격']).sum()
-            st.metric(label="총 재고 자산 가치", value=f"{total_value:,.0f} 원")
-            df_inventory['자산 가치'] = df_inventory['현재 수량'] * df_inventory['가격']
-            st.dataframe(df_inventory[['책 이름', '현재 수량', '가격', '자산 가치']])
+        if monthly_data.empty:
+            st.warning("선택한 달에 데이터가 없습니다.")
+        else:
+            # 4. 유형별 금액 계산 (수량 * 가격)
+            monthly_data['총액'] = monthly_data['수량'] * monthly_data['가격']
 
-        with tab3:
-            st.subheader("거래처별 반품률 분석")
-            tx_valid = df_transactions[df_transactions['거래처'] != 'N/A'].copy()
-            if not tx_valid.empty:
-                sales_by_client = tx_valid[tx_valid['유형'] == '출고'].groupby('거래처')['수량'].sum()
-                returns_by_client = tx_valid[tx_valid['유형'] == '반품'].groupby('거래처')['수량'].sum()
-                analysis_df = pd.DataFrame({'총 판매량': sales_by_client, '총 반품량': returns_by_client}).fillna(0)
-                analysis_df['반품률(%)'] = (analysis_df['총 반품량'] / analysis_df['총 판매량']) * 100
-                analysis_df['반품률(%)'] = analysis_df['반품률(%)'].fillna(0).round(2)
-                st.dataframe(analysis_df)
-            else:
-                st.info("거래 데이터 부족")
+            # 그룹화하여 유형별 합계 구하기
+            summary = monthly_data.groupby('유형')['총액'].sum()
+
+            # 각 항목별 합계 가져오기 (없으면 0원)
+            total_out = summary.get('출고', 0)  # 출고 금액
+            total_in = summary.get('입고', 0)  # 입고 금액
+            total_return = summary.get('반품', 0)  # 반품 금액
+            total_damage = summary.get('파손', 0)  # 파손 금액
+
+            # 5. 공식 적용
+            # 수익 = (출고 - 반품)
+            revenue = total_out - total_return
+
+            # 비용 = (입고 + 파손)
+            cost = total_in + total_damage
+
+            # 순이익 = 수익 - 비용
+            net_profit = revenue - cost
+
+            # 6. 결과 시각화 (Metric)
+            st.markdown("---")
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                st.metric(label="총 수익 (Revenue)", value=f"{revenue:,.0f} 원",
+                          help="(출고 금액 - 반품 금액)")
+            with c2:
+                st.metric(label="총 비용 (Cost)", value=f"{cost:,.0f} 원",
+                          help="(입고 금액 + 파손 금액)")
+            with c3:
+                st.metric(label="순이익 (Net Profit)", value=f"{net_profit:,.0f} 원",
+                          delta=f"{net_profit:,.0f} 원",
+                          help="수익 - 비용")
+            st.markdown("---")
+
+            # 7. 상세 데이터 보여주기
+            with st.expander("📊 상세 거래 내역 보기"):
+                st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']],
+                             use_container_width=True)
