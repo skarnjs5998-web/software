@@ -94,39 +94,34 @@ selected_menu = st.sidebar.selectbox("메뉴 선택", menu_options)
 # 5. 기능 구현
 # ---------------------------------------------------------
 
-# === [1] 현재 재고 ===
+# === [1] 현재 재고 (UI 개선 적용) ===
 if selected_menu == "현재 재고":
-    st.header("📦 현재 재고 조회")
+    st.subheader("🔍 현재 재고 현황")
 
-    search_query = st.text_input("책 이름 또는 ISBN 검색")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_term = st.text_input("검색 (책 이름 또는 ISBN)", placeholder="검색어를 입력하세요...")
 
-    try:
-        # 검색 필터링
-        if search_query:
-            # 존재하지 않는 컬럼으로 검색 시도 시 에러 방지
-            conditions = pd.Series([False] * len(df_inventory))
-            if '책 이름' in df_inventory.columns:
-                conditions |= df_inventory['책 이름'].str.contains(search_query)
-            if 'ISBN' in df_inventory.columns:
-                conditions |= df_inventory['ISBN'].str.contains(search_query)
+    # 검색 로직
+    if search_term:
+        # astype(str)을 사용하여 데이터 타입 불일치 오류 방지
+        mask = df_inventory['책 이름'].astype(str).str.contains(search_term) | df_inventory['ISBN'].astype(
+            str).str.contains(search_term)
+        result = df_inventory[mask]
+    else:
+        result = df_inventory
 
-            result = df_inventory[conditions]
-        else:
-            result = df_inventory
-
-        # [핵심 수정 3] 순서 상관없이, 실제 존재하는 컬럼만 골라서 보여줌 (안전 모드)
-        desired_cols = ['책 이름', 'ISBN', '가격', '현재 수량']
-        available_cols = [col for col in desired_cols if col in result.columns]
-
-        if available_cols:
-            st.dataframe(result[available_cols], use_container_width=True)
-        else:
-            # 원하는 컬럼이 하나도 없으면 전체를 그냥 보여줌 (비상 대책)
-            st.warning("설정된 컬럼을 찾을 수 없어 전체 데이터를 표시합니다.")
-            st.dataframe(result, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"데이터 처리 중 에러 발생: {e}")
+    # 스타일링하여 표시 (column_config 활용)
+    # 데이터프레임에 실제 컬럼이 있는지 확인 후 표시
+    st.dataframe(
+        result,
+        column_config={
+            "가격": st.column_config.NumberColumn(format="%d원"),
+            "현재 수량": st.column_config.NumberColumn(format="%d권"),
+        },
+        use_container_width=True,
+        hide_index=True
+    )
 
 
 # === [2] 주문 청구 ===
