@@ -18,14 +18,29 @@ def load_data_from_github(file_name):
         repo = g.get_repo(st.secrets["github"]["repo_name"])
         contents = repo.get_contents(file_name)
 
-        # [핵심 수정 1] utf-8-sig로 BOM 제거
+        # 1. BOM 제거 (utf-8-sig)
         decoded = contents.decoded_content.decode("utf-8-sig")
-
         df = pd.read_csv(StringIO(decoded))
 
-        # [핵심 수정 2] 앞뒤 공백 제거 + 특수 공백(\xa0) 제거
-        # 눈에 안 보이는 공백까지 확실하게 처리합니다.
+        # 2. 기본 공백 제거
         df.columns = df.columns.str.strip().str.replace("\xa0", " ")
+
+        # 3. [강력한 해결책] 컬럼 이름 정규화 (Standardization)
+        # CSV 파일의 헤더가 조금 달라도('현재수량', '책이름') 코드가 작동하도록 강제 변경
+        rename_map = {}
+        for col in df.columns:
+            clean_col = col.replace(" ", "")  # 모든 공백 제거 후 비교
+            if "책이름" in clean_col:
+                rename_map[col] = "책 이름"
+            elif "현재수량" in clean_col:
+                rename_map[col] = "현재 수량"
+            elif "안전재고" in clean_col:
+                rename_map[col] = "안전 재고"
+            elif "ISBN" in clean_col:  # 대소문자 이슈 방지
+                rename_map[col] = "ISBN"
+
+        if rename_map:
+            df = df.rename(columns=rename_map)
 
         return df
     except Exception as e:
@@ -102,27 +117,26 @@ if selected_menu == "현재 재고":
     with col1:
         search_term = st.text_input("검색 (책 이름 또는 ISBN)", placeholder="검색어를 입력하세요...")
 
-    # 검색 로직
     if search_term:
-        # astype(str)을 사용하여 데이터 타입 불일치 오류 방지
         mask = df_inventory['책 이름'].astype(str).str.contains(search_term) | df_inventory['ISBN'].astype(
             str).str.contains(search_term)
         result = df_inventory[mask]
     else:
         result = df_inventory
 
-    # 스타일링하여 표시 (column_config 활용)
-    # 데이터프레임에 실제 컬럼이 있는지 확인 후 표시
+    # 안전하게 컬럼 설정 (없는 컬럼은 무시)
+    config = {}
+    if "가격" in result.columns:
+        config["가격"] = st.column_config.NumberColumn(format="%d원")
+    if "현재 수량" in result.columns:
+        config["현재 수량"] = st.column_config.NumberColumn(format="%d권")
+
     st.dataframe(
         result,
-        column_config={
-            "가격": st.column_config.NumberColumn(format="%d원"),
-            "현재 수량": st.column_config.NumberColumn(format="%d권"),
-        },
+        column_config=config,
         use_container_width=True,
         hide_index=True
     )
-
 
 # === [2] 주문 청구 ===
 elif selected_menu == "주문 청구":
@@ -158,8 +172,13 @@ elif selected_menu == "주문 청구":
 elif selected_menu == "입출고 입력" and is_admin:
     st.header("🚚 입출고 관리")
 
-    if '책 이름' not in df_inventory.columns:
-        st.error(f"'책 이름' 컬럼이 없습니다. 현재 인식된 컬럼: {df_inventory.columns.tolist()}")
+    # 필수 컬럼 체크
+    required_cols = ['책 이름', '현재 수량', '가격']
+    missing_cols = [col for col in required_cols if col not in df_inventory.columns]
+
+    if missing_cols:
+        st.error(f"데이터 오류: 다음 컬럼을 찾을 수 없습니다 -> {missing_cols}")
+        st.write("현재 인식된 컬럼:", df_inventory.columns.tolist())
     else:
         with st.form("transaction_form"):
             tx_type = st.radio("거래 유형", ["입고", "출고", "파손", "반품"])
@@ -175,39 +194,44 @@ elif selected_menu == "입출고 입력" and is_admin:
                 if tx_type != "파손" and not client_name:
                     st.error("거래처를 입력해주세요.")
                 else:
-                    current_book_info = df_inventory[df_inventory['책 이름'] == selected_book].iloc[0]
-                    current_qty = int(current_book_info['현재 수량'])
-                    price = int(current_book_info['가격'])
+                    try:
+                        # 데이터 처리 로직
+                        current_book_info = df_inventory[df_inventory['책 이름'] == selected_book].iloc[0]
+                        current_qty = int(current_book_info['현재 수량'])
+                        price = int(current_book_info['가격'])
 
-                    new_qty = current_qty
-                    if tx_type in ["입고", "반품"]:
-                        new_qty += qty
-                    elif tx_type in ["출고", "파손"]:
-                        if current_qty < qty:
-                            st.error("재고가 부족합니다.")
-                            st.stop()
-                        new_qty -= qty
+                        new_qty = current_qty
+                        if tx_type in ["입고", "반품"]:
+                            new_qty += qty
+                        elif tx_type in ["출고", "파손"]:
+                            if current_qty < qty:
+                                st.error("재고가 부족합니다.")
+                                st.stop()
+                            new_qty -= qty
 
-                    df_inventory.loc[df_inventory['책 이름'] == selected_book, '현재 수량'] = new_qty
+                        df_inventory.loc[df_inventory['책 이름'] == selected_book, '현재 수량'] = new_qty
 
-                    new_tx = pd.DataFrame({
-                        "일시": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-                        "거래처": [client_name if client_name else "N/A"],
-                        "책 이름": [selected_book],
-                        "수량": [qty],
-                        "가격": [price],
-                        "유형": [tx_type]
-                    })
+                        new_tx = pd.DataFrame({
+                            "일시": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+                            "거래처": [client_name if client_name else "N/A"],
+                            "책 이름": [selected_book],
+                            "수량": [qty],
+                            "가격": [price],
+                            "유형": [tx_type]
+                        })
 
-                    updated_tx = pd.concat([df_transactions, new_tx], ignore_index=True)
+                        updated_tx = pd.concat([df_transactions, new_tx], ignore_index=True)
 
-                    save_inventory = save_data_to_github(df_inventory, "inventory.csv",
-                                                         f"Update Inventory: {selected_book}")
-                    save_tx = save_data_to_github(updated_tx, "transactions.csv",
-                                                  f"Add Tx: {tx_type} - {selected_book}")
+                        save_inventory = save_data_to_github(df_inventory, "inventory.csv",
+                                                             f"Update Inventory: {selected_book}")
+                        save_tx = save_data_to_github(updated_tx, "transactions.csv",
+                                                      f"Add Tx: {tx_type} - {selected_book}")
 
-                    if save_inventory and save_tx:
-                        st.success(f"{tx_type} 처리 완료! (현재 재고: {new_qty}권)")
+                        if save_inventory and save_tx:
+                            st.success(f"{tx_type} 처리 완료! (현재 재고: {new_qty}권)")
+
+                    except Exception as e:
+                        st.error(f"처리 중 오류 발생: {e}")
 
 # === [4] 거래 기록 (관리자) ===
 elif selected_menu == "거래 기록" and is_admin:
@@ -248,7 +272,7 @@ elif selected_menu == "알림" and is_admin:
             else:
                 st.success("모든 재고가 안전합니다.")
         else:
-            st.error("재고 데이터 컬럼 오류")
+            st.error(f"재고 체크 불가: 컬럼 오류 (현재 컬럼: {df_inventory.columns.tolist()})")
 
 # === [6] 리포트 및 분석 (관리자) ===
 elif selected_menu == "리포트 및 분석" and is_admin:
