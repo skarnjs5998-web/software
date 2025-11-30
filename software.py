@@ -17,10 +17,16 @@ def load_data_from_github(file_name):
         g = Github(st.secrets["github"]["token"])
         repo = g.get_repo(st.secrets["github"]["repo_name"])
         contents = repo.get_contents(file_name)
-        decoded = contents.decoded_content.decode("utf-8")
+
+        # [핵심 수정 1] utf-8-sig로 BOM 제거
+        decoded = contents.decoded_content.decode("utf-8-sig")
+
         df = pd.read_csv(StringIO(decoded))
-        # [수정됨] 컬럼 이름의 앞뒤 공백을 제거하여 에러 방지
-        df.columns = df.columns.str.strip()
+
+        # [핵심 수정 2] 앞뒤 공백 제거 + 특수 공백(\xa0) 제거
+        # 눈에 안 보이는 공백까지 확실하게 처리합니다.
+        df.columns = df.columns.str.strip().str.replace("\xa0", " ")
+
         return df
     except Exception as e:
         st.error(f"데이터 로드 실패 ({file_name}): {e}")
@@ -32,9 +38,11 @@ def save_data_to_github(df, file_name, message):
         g = Github(st.secrets["github"]["token"])
         repo = g.get_repo(st.secrets["github"]["repo_name"])
         contents = repo.get_contents(file_name)
+
         csv_buffer = StringIO()
         df.to_csv(csv_buffer, index=False)
         new_content = csv_buffer.getvalue()
+
         repo.update_file(contents.path, message, new_content, contents.sha)
         st.cache_data.clear()
         return True
@@ -90,31 +98,35 @@ selected_menu = st.sidebar.selectbox("메뉴 선택", menu_options)
 if selected_menu == "현재 재고":
     st.header("📦 현재 재고 조회")
 
-    # [디버깅용] 만약 에러가 계속 나면 아래 주석을 풀어 화면에서 실제 컬럼명을 확인하세요.
-    # st.write("현재 인식된 컬럼명:", df_inventory.columns.tolist())
-
     search_query = st.text_input("책 이름 또는 ISBN 검색")
 
-    # [수정됨] 컬럼 이름이 정확히 있는지 확인 후 필터링
     try:
+        # 검색 필터링
         if search_query:
-            result = df_inventory[
-                df_inventory['책 이름'].str.contains(search_query) |
-                df_inventory['ISBN'].str.contains(search_query)
-                ]
+            # 존재하지 않는 컬럼으로 검색 시도 시 에러 방지
+            conditions = pd.Series([False] * len(df_inventory))
+            if '책 이름' in df_inventory.columns:
+                conditions |= df_inventory['책 이름'].str.contains(search_query)
+            if 'ISBN' in df_inventory.columns:
+                conditions |= df_inventory['ISBN'].str.contains(search_query)
+
+            result = df_inventory[conditions]
         else:
             result = df_inventory
 
-        # 필요한 컬럼만 선택해서 보여주기
-        cols_to_show = ['책 이름', 'ISBN', '가격', '현재 수량']
-        # 만약 CSV에 해당 컬럼이 없으면 에러 대신 경고 메시지 출력
-        if all(col in result.columns for col in cols_to_show):
-            st.dataframe(result[cols_to_show], use_container_width=True)
-        else:
-            st.error(f"CSV 파일의 헤더가 올바르지 않습니다. \n필요한 컬럼: {cols_to_show}\n현재 컬럼: {result.columns.tolist()}")
+        # [핵심 수정 3] 순서 상관없이, 실제 존재하는 컬럼만 골라서 보여줌 (안전 모드)
+        desired_cols = ['책 이름', 'ISBN', '가격', '현재 수량']
+        available_cols = [col for col in desired_cols if col in result.columns]
 
-    except KeyError as e:
-        st.error(f"데이터 처리 중 에러 발생: {e}. CSV 파일의 컬럼명을 확인해주세요.")
+        if available_cols:
+            st.dataframe(result[available_cols], use_container_width=True)
+        else:
+            # 원하는 컬럼이 하나도 없으면 전체를 그냥 보여줌 (비상 대책)
+            st.warning("설정된 컬럼을 찾을 수 없어 전체 데이터를 표시합니다.")
+            st.dataframe(result, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"데이터 처리 중 에러 발생: {e}")
 
 
 # === [2] 주문 청구 ===
@@ -122,7 +134,6 @@ elif selected_menu == "주문 청구":
     st.header("📝 도서 주문 청구")
 
     with st.form("order_form"):
-        # [수정됨] '책 이름' 컬럼 확인
         if '책 이름' in df_inventory.columns:
             book_list = df_inventory['책 이름'].tolist()
             client_name = st.text_input("거래처/주문자명")
@@ -146,14 +157,14 @@ elif selected_menu == "주문 청구":
                     if save_data_to_github(updated_orders, "orders.csv", f"Order request: {client_name}"):
                         st.success(f"주문이 접수되었습니다.\n\n거래처: {client_name}, 책: {selected_book}, 수량: {order_qty}")
         else:
-            st.error("'책 이름' 컬럼을 찾을 수 없습니다. inventory.csv 파일을 확인하세요.")
+            st.error(f"'책 이름' 컬럼을 찾을 수 없습니다. 현재 인식된 컬럼: {df_inventory.columns.tolist()}")
 
 # === [3] 입출고 입력 (관리자) ===
 elif selected_menu == "입출고 입력" and is_admin:
     st.header("🚚 입출고 관리")
 
     if '책 이름' not in df_inventory.columns:
-        st.error("'책 이름' 컬럼이 없습니다.")
+        st.error(f"'책 이름' 컬럼이 없습니다. 현재 인식된 컬럼: {df_inventory.columns.tolist()}")
     else:
         with st.form("transaction_form"):
             tx_type = st.radio("거래 유형", ["입고", "출고", "파손", "반품"])
