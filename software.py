@@ -136,7 +136,7 @@ if selected_menu == "현재 재고":
         result,
         column_config=config,
         use_container_width=True,
-        hide_index=True # [수정 2] 인덱스 숨기기 (여기에도 적용하면 깔끔함)
+        hide_index=True
     )
 
 # === [2] 주문 청구 ===
@@ -157,7 +157,7 @@ elif selected_menu == "주문 청구":
                     st.error("거래처/주문자명을 입력해주세요.")
                 else:
                     new_order = pd.DataFrame({
-                        "일시": [get_korea_time()], # [수정 1] 한국 시간 적용
+                        "일시": [get_korea_time()],
                         "거래처": [client_name],
                         "책 이름": [selected_book],
                         "주문 수량": [order_qty],
@@ -202,8 +202,8 @@ elif selected_menu == "입출고 입력" and is_admin:
                         
                         new_qty = current_qty
                         
-                        # [수정 3] 로직 반영: 증가 그룹 vs 감소 그룹
-                        # 증가 그룹: 입고, 반품, 취소(증가)
+                    
+                        
                         if tx_type in ["입고", "반품", "취소(증가)"]:
                             new_qty += qty
                             
@@ -240,7 +240,7 @@ elif selected_menu == "입출고 입력" and is_admin:
 elif selected_menu == "거래 기록" and is_admin:
     st.header("📋 전체 거래 내역")
     
-    # [참고] 기존 '취소 및 되돌리기' 기능은 유지 (UX적으로 편하므로)
+    
     with st.expander("🚨 잘못 입력한 거래 취소 및 되돌리기 (클릭하여 열기)"):
         st.caption("주의: 이 기능은 선택한 거래 기록을 삭제하고, 재고 수량을 해당 거래 이전으로 되돌립니다.")
         
@@ -436,3 +436,4 @@ elif selected_menu == "수익 분석" and is_admin:
                 with st.expander("📊 상세 거래 내역 보기"):
                     st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']], 
                                  use_container_width=True, hide_index=True)
+
