@@ -165,7 +165,7 @@ elif selected_menu == "주문 청구":
         else:
             st.error(f"'책 이름' 컬럼을 찾을 수 없습니다.")
 
-# === [3] 입출고 입력 (관리자 - 주문 자동 연동 기능 추가됨) ===
+# === [3] 입출고 입력 ===
 elif selected_menu == "입출고 입력" and is_admin:
     st.header("🚚 입출고 관리")
     
@@ -219,9 +219,9 @@ elif selected_menu == "입출고 입력" and is_admin:
                         })
                         updated_tx = pd.concat([df_transactions, new_tx], ignore_index=True)
                         
-                        # 3. [NEW] 주문 자동 처리 로직 (자동 연동)
+                      
                         order_processed_msg = ""
-                        save_orders = True # 기본값 True (주문 변경 없어도 진행)
+                        save_orders = True 
                         
                         # '출고' 거래이고, 거래처가 명확할 때만 자동 처리 시도
                         if tx_type == "출고" and client_name:
@@ -426,6 +426,7 @@ elif selected_menu == "수익 분석" and is_admin:
                 with st.expander("📊 상세 거래 내역 보기"):
                     st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']], 
                                  use_container_width=True, hide_index=True)
+
 
 
 
