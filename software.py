@@ -23,14 +23,11 @@ def load_data_from_github(file_name):
         repo = g.get_repo(st.secrets["github"]["repo_name"])
         contents = repo.get_contents(file_name)
         
-        # 1. BOM 제거 (utf-8-sig)
         decoded = contents.decoded_content.decode("utf-8-sig")
         df = pd.read_csv(StringIO(decoded))
         
-        # 2. 기본 공백 제거
         df.columns = df.columns.str.strip().str.replace("\xa0", " ")
         
-        # 3. 컬럼 이름 정규화
         rename_map = {}
         for col in df.columns:
             clean_col = col.replace(" ", "") 
@@ -168,7 +165,7 @@ elif selected_menu == "주문 청구":
         else:
             st.error(f"'책 이름' 컬럼을 찾을 수 없습니다.")
 
-# === [3] 입출고 입력 (관리자) ===
+# === [3] 입출고 입력 (관리자 - 주문 자동 연동 기능 추가됨) ===
 elif selected_menu == "입출고 입력" and is_admin:
     st.header("🚚 입출고 관리")
     
@@ -200,20 +197,18 @@ elif selected_menu == "입출고 입력" and is_admin:
                         
                         new_qty = current_qty
                         
-                    
-                        
                         if tx_type in ["입고", "반품", "취소(증가)"]:
                             new_qty += qty
-                            
-                        # 감소 그룹: 출고, 파손, 취소(감소)
                         elif tx_type in ["출고", "파손", "취소(감소)"]:
                             if current_qty < qty:
                                 st.error("재고가 부족합니다.")
                                 st.stop()
                             new_qty -= qty
                         
+                        # 1. 재고 업데이트
                         df_inventory.loc[df_inventory['책 이름'] == selected_book, '현재 수량'] = new_qty
                         
+                        # 2. 거래 기록 업데이트
                         new_tx = pd.DataFrame({
                             "일시": [get_korea_time()],
                             "거래처": [client_name if client_name else "N/A"],
@@ -222,14 +217,38 @@ elif selected_menu == "입출고 입력" and is_admin:
                             "가격": [price],
                             "유형": [tx_type]
                         })
-                        
                         updated_tx = pd.concat([df_transactions, new_tx], ignore_index=True)
                         
+                        # 3. [NEW] 주문 자동 처리 로직 (자동 연동)
+                        order_processed_msg = ""
+                        save_orders = True # 기본값 True (주문 변경 없어도 진행)
+                        
+                        # '출고' 거래이고, 거래처가 명확할 때만 자동 처리 시도
+                        if tx_type == "출고" and client_name:
+                            # 조건: 미처리 + 거래처 일치 + 책 일치 + 수량 일치
+                            # (수량이 정확히 일치하는 경우만 자동 처리하도록 설정함)
+                            matching_orders = df_orders[
+                                (df_orders['상태'] == '미처리') & 
+                                (df_orders['거래처'] == client_name) & 
+                                (df_orders['책 이름'] == selected_book) & 
+                                (df_orders['주문 수량'] == qty)
+                            ]
+                            
+                            if not matching_orders.empty:
+                                # 가장 오래된 주문 하나를 가져와서 처리
+                                target_idx = matching_orders.index[0]
+                                df_orders.loc[target_idx, '상태'] = "처리"
+                                
+                                # 주문 파일 저장을 위해 함수 호출
+                                save_orders = save_data_to_github(df_orders, "orders.csv", f"Auto Process Order: {client_name}")
+                                order_processed_msg = f"\n\n✨ [자동 알림] '{client_name}'의 주문 요청이 자동으로 '처리' 상태로 변경되었습니다."
+
+                        # 4. 파일 저장 (재고, 거래기록)
                         save_inventory = save_data_to_github(df_inventory, "inventory.csv", f"Update Inventory: {selected_book}")
                         save_tx = save_data_to_github(updated_tx, "transactions.csv", f"Add Tx: {tx_type} - {selected_book}")
                         
-                        if save_inventory and save_tx:
-                            st.success(f"{tx_type} 처리 완료! (현재 재고: {new_qty}권)")
+                        if save_inventory and save_tx and save_orders:
+                            st.success(f"{tx_type} 처리 완료! (현재 재고: {new_qty}권){order_processed_msg}")
                             
                     except Exception as e:
                         st.error(f"처리 중 오류 발생: {e}")
@@ -237,7 +256,6 @@ elif selected_menu == "입출고 입력" and is_admin:
 # === [4] 거래 기록 (관리자) ===
 elif selected_menu == "거래 기록" and is_admin:
     st.header("📋 전체 거래 내역")
-    
     
     with st.expander("🚨 잘못 입력한 거래 취소 및 되돌리기 (클릭하여 열기)"):
         st.caption("주의: 이 기능은 선택한 거래 기록을 삭제하고, 재고 수량을 해당 거래 이전으로 되돌립니다.")
@@ -263,10 +281,8 @@ elif selected_menu == "거래 기록" and is_admin:
                 target_type = target_tx['유형']
                 
                 revert_qty = 0
-                # 증가 그룹 취소 -> 감소
                 if target_type in ["입고", "반품", "취소(증가)"]:
                     revert_qty = -target_qty
-                # 감소 그룹 취소 -> 증가
                 elif target_type in ["출고", "파손", "취소(감소)"]:
                     revert_qty = target_qty
                 
@@ -302,7 +318,6 @@ elif selected_menu == "거래 기록" and is_admin:
         else:
             st.info("취소할 거래 기록이 없습니다.")
 
-    # 거래 기록 테이블 표시
     if not df_transactions.empty:
         df_sorted = df_transactions.sort_values(by="일시", ascending=False)
         st.dataframe(df_sorted, use_container_width=True, hide_index=True)
@@ -316,27 +331,20 @@ elif selected_menu == "알림" and is_admin:
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("1. 신규 주문 요청")
-        # '미처리' 상태인 주문만 가져오기
         if not df_orders.empty and '상태' in df_orders.columns:
-            # 인덱스를 유지하기 위해 reset_index를 하지 않음
             pending_orders = df_orders[df_orders['상태'] == '미처리']
             
             if not pending_orders.empty:
                 for idx, row in pending_orders.iterrows():
-                    # 각 주문마다 박스를 만들고 버튼 추가
                     with st.container(border=True):
                         st.write(f"📢 **{row['거래처']}** - **{row['책 이름']}** ({row['주문 수량']}권)")
                         st.caption(f"요청 일시: {row['일시']}")
                         
-                        # [수정 4] 처리 완료 버튼 추가
-                        # 고유한 key를 위해 idx 사용
                         if st.button("처리 완료", key=f"btn_complete_{idx}"):
-                            # 원본 데이터프레임(df_orders)에서 해당 행의 상태를 '처리'로 변경
                             df_orders.loc[idx, '상태'] = "처리"
-                            
                             if save_data_to_github(df_orders, "orders.csv", f"Order Processed: {row['거래처']}"):
                                 st.success("처리 상태가 변경되었습니다.")
-                                st.rerun() # 즉시 새로고침하여 목록에서 제거
+                                st.rerun()
             else:
                 st.success("신규 주문이 없습니다.")
         else:
@@ -365,7 +373,6 @@ elif selected_menu == "수익 분석" and is_admin:
         st.info("거래 기록이 없어 분석할 수 없습니다.")
     else:
         df_analysis = df_transactions.copy()
-        
         df_analysis['일시'] = df_analysis['일시'].astype(str).str.replace('.', '-', regex=False).str.strip()
         
         try:
@@ -374,8 +381,6 @@ elif selected_menu == "수익 분석" and is_admin:
             df_analysis['일시'] = pd.to_datetime(df_analysis['일시'], errors='coerce')
         
         if df_analysis['일시'].isnull().any():
-            invalid_count = df_analysis['일시'].isnull().sum()
-            st.warning(f"⚠️ 여전히 형식을 알 수 없는 날짜 데이터 {invalid_count}건이 있습니다.")
             df_analysis = df_analysis.dropna(subset=['일시'])
             
         if df_analysis.empty:
@@ -394,25 +399,13 @@ elif selected_menu == "수익 분석" and is_admin:
                 monthly_data['총액'] = monthly_data['수량'] * monthly_data['가격']
                 summary = monthly_data.groupby('유형')['총액'].sum()
                 
-                # [수정 3] 취소 항목들도 계산에 반영
-                total_out = summary.get('출고', 0) + summary.get('취소(감소)', 0) # 나간 돈
-                total_in = summary.get('입고', 0) + summary.get('취소(증가)', 0) # 들어온 돈 (비용) -> *주의: 취소(증가)는 재고가 늘어난 것이므로 비용으로 볼 수 있음(반품 취소 등) 혹은 문맥에 따라 다름. 여기선 단순 합산.
+                total_out = summary.get('출고', 0) + summary.get('취소(감소)', 0)
+                total_in = summary.get('입고', 0) + summary.get('취소(증가)', 0)
                 total_return = summary.get('반품', 0)
                 total_damage = summary.get('파손', 0)
                 
-                # 로직 일관성:
-                # 수익 = (출고 - 반품) + (취소(감소)는 출고와 같음)
-                # *단, 취소(증가)는 '출고 취소'의 의미라면 수익을 줄여야 하고, '입고'의 의미라면 비용을 늘려야 함.
-                # 사용자의 정의: "취소(증가)는 출고를 잘못 입력했을 경우" -> 즉, 출고된 걸 다시 가져옴 -> 수익 취소? or 재고 자산 증가?
-                # 사용자의 정의: "취소(감소)는 입고를 잘못 입력했을 경우" -> 즉, 입고된 걸 다시 뺌.
-                
-                # 여기서는 '유형'에 따라 재고가 움직인 대로 단순히 합산합니다.
-                # 수익 관련: 출고(+), 취소(감소)(+), 반품(-) 
                 revenue = (summary.get('출고', 0) + summary.get('취소(감소)', 0)) - summary.get('반품', 0)
-                
-                # 비용 관련: 입고(+), 취소(증가)(+), 파손(+)
                 cost = (summary.get('입고', 0) + summary.get('취소(증가)', 0)) + summary.get('파손', 0)
-                
                 net_profit = revenue - cost
                 
                 st.markdown("---")
