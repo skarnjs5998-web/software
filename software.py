@@ -10,7 +10,6 @@ import pytz
 # ---------------------------------------------------------
 st.set_page_config(page_title="인하대 출판부 재고 관리", layout="wide")
 
-# [수정 1] 한국 시간 구하는 함수 정의
 def get_korea_time():
     utc_now = datetime.now(pytz.utc)
     korea_timezone = pytz.timezone('Asia/Seoul')
@@ -306,7 +305,6 @@ elif selected_menu == "거래 기록" and is_admin:
     # 거래 기록 테이블 표시
     if not df_transactions.empty:
         df_sorted = df_transactions.sort_values(by="일시", ascending=False)
-        # [수정 2] 가장 좌측의 인덱스 번호 숨기기 (hide_index=True)
         st.dataframe(df_sorted, use_container_width=True, hide_index=True)
     else:
         st.info("거래 기록이 없습니다.")
@@ -435,5 +433,6 @@ elif selected_menu == "수익 분석" and is_admin:
                 with st.expander("📊 상세 거래 내역 보기"):
                     st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']], 
                                  use_container_width=True, hide_index=True)
+
 
 
