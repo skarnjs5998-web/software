@@ -180,7 +180,6 @@ elif selected_menu == "입출고 입력" and is_admin:
          st.error(f"데이터 오류: 다음 컬럼을 찾을 수 없습니다 -> {missing_cols}")
     else:
         with st.form("transaction_form"):
-            # [수정 3] 취소(증가), 취소(감소) 항목 추가
             tx_type = st.radio("거래 유형", ["입고", "출고", "파손", "반품", "취소(증가)", "취소(감소)"])
             st.caption("'취소(증가)': 재고 증가 (출고 취소 시 사용) | '취소(감소)': 재고 감소 (입고 취소 시 사용)")
             
@@ -217,7 +216,7 @@ elif selected_menu == "입출고 입력" and is_admin:
                         df_inventory.loc[df_inventory['책 이름'] == selected_book, '현재 수량'] = new_qty
                         
                         new_tx = pd.DataFrame({
-                            "일시": [get_korea_time()], # [수정 1] 한국 시간 적용
+                            "일시": [get_korea_time()],
                             "거래처": [client_name if client_name else "N/A"],
                             "책 이름": [selected_book],
                             "수량": [qty],
@@ -436,4 +435,5 @@ elif selected_menu == "수익 분석" and is_admin:
                 with st.expander("📊 상세 거래 내역 보기"):
                     st.dataframe(monthly_data[['일시', '거래처', '책 이름', '유형', '수량', '가격', '총액']], 
                                  use_container_width=True, hide_index=True)
+
 
